@@ -36,3 +36,35 @@ Com as dependências instaladas e o arquivo `.env` configurado, execute:
 python main.py
 
 O processamento dos lotes e o status das requisições serão exibidos no terminal durante a execução.
+
+## Arquivo de entrada
+
+O projeto espera um arquivo chamado `produtos.json` na raiz da aplicação.
+
+Cada linha do arquivo deve representar um produto em formato JSON, contendo os seguintes campos:
+
+```json
+{
+  "idproduto": 123456,
+  "codEan": "7891234567890",
+  "descricao": "Produto de exemplo"
+}
+```
+
+O arquivo pode conter vários produtos, com um objeto JSON por linha.
+
+## Arquivos de saída
+
+Os arquivos gerados pela aplicação são armazenados na pasta `output/`.
+
+### Revisão Fiscal
+
+output/revisao_fiscal_v3.xlsx
+
+Contém os produtos retornados pela API. Os dados são achatados automaticamente, transformando propriedades aninhadas do JSON em colunas do Excel.
+
+### Erros
+
+output/revisao_fiscal_v3_erros.xlsx
+
+Gerado somente quando ocorrerem erros no processamento. Contém os produtos dos lotes com falha, o número do lote e o motivo do erro.
