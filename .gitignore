@@ -1,0 +1,5 @@
+.env
+.venv/
+produtos.json
+output/
+__pycache__/
