@@ -4,6 +4,19 @@ import os
 import json
 import requests
 import math
+import re 
+
+#Listas do projeto
+produtos = []
+lotes_certos = []
+lotes_errados = []
+itens = []
+retornados = []
+nao_encontrados = []
+itens_achatados = []
+colunas = []
+produtos_com_erro = []
+erros_entrada = []
 
 # Carrega as configurações e credenciais armazenadas no arquivo .env
 load_dotenv()
@@ -15,16 +28,109 @@ token = os.getenv("TOKEN")
 cmun = os.getenv("CMUN")
 regime = os.getenv("REGIME")
 crt = int(os.getenv("CRT"))
+
 # Monta a URL do endpoint de Revisão Fiscal V3
 url_revisao = f"{url_base}/revisao/{id_parceiro}/{cnpj}/{token}"
 
-# Lê os produtos do arquivo JSON de entrada
-produtos = []
+# Recupera campos de texto de linhas com JSON inválido para registrar no relatório de erros
+def extrair_campo(texto, campo):
+    padrao = rf'"{campo}"\s*:\s*"([^"]*)"'
+    resultado = re.search(padrao, texto)
 
+    if resultado:
+        return resultado.group(1)
+
+    return ""
+
+# Recupera o idproduto numérico de linhas com JSON inválido para registrar no relatório de erros
+def extrair_idproduto(texto):
+    padrao = r'"idproduto"\s*:\s*(\d+)'
+    resultado = re.search(padrao, texto)
+
+    if resultado:
+        return resultado.group(1)
+
+    return ""
+
+# Lê e valida os produtos do arquivo de entrada
+# Produtos com campos obrigatórios ausentes são separados para o relatório de erros
 with open("produtos.json", "r", encoding="utf-8") as arquivo:
-    for linha in arquivo:
-        produto = json.loads(linha)
-        produtos.append(produto)
+    for numero_linha, linha in enumerate(arquivo, start =1):
+        try:
+            produto = json.loads(linha)
+
+            if "idproduto" not in produto:
+                erro_entrada = {
+                    "numero_linha": numero_linha,
+                    "numero_lote": "",
+                    "idproduto": "",
+                    "ean": produto.get("codEan", ""),
+                    "descricao": produto.get("descricao", ""),
+                    "conteudo": linha.strip(),
+                    "motivo_erro": "Campo idproduto ausente"
+                }
+                erros_entrada.append(erro_entrada)
+                continue
+
+            if "codEan" not in produto:
+                erro_entrada = {
+                "numero_linha": numero_linha,
+                "numero_lote": "",
+                "idproduto": str(produto.get("idproduto", "")),
+                "ean": "",
+                "descricao": produto.get("descricao", ""),
+                "conteudo": linha.strip(),
+                "motivo_erro": "Campo codEan ausente"
+            }
+                erros_entrada.append(erro_entrada)
+                continue
+
+            if "descricao" not in produto:
+                erro_entrada = {
+                "numero_linha": numero_linha,
+                "numero_lote": "",
+                "idproduto": str(produto.get("idproduto", "")),
+                "ean": produto.get("codEan", ""),
+                "descricao": "",
+                "conteudo": linha.strip(),
+                "motivo_erro": "Campo descricao ausente"
+            }
+                erros_entrada.append(erro_entrada)
+                continue
+            
+            produtos.append(produto)
+            
+        # Em linhas com JSON inválido, tenta recuperar os campos disponíveis
+        # e registra todos os problemas encontrados sem interromper a execução
+        except json.JSONDecodeError as erro:
+            motivos = []
+
+            idproduto_extraido = extrair_idproduto(linha)
+            ean_extraido = extrair_campo(linha, "codEan")
+            descricao_extraida = extrair_campo(linha, "descricao")
+
+            if idproduto_extraido == "":
+                motivos.append("Campo idproduto ausente ou inválido")
+
+            if ean_extraido == "":
+                motivos.append("Campo codEan ausente, vazio ou inválido")
+
+            if descricao_extraida == "":
+                motivos.append("Campo descricao ausente, vazio ou inválido")
+
+            motivos.append(f"JSON inválido: {erro}")
+            motivo_completo = " | ".join(motivos)
+            
+            erro_entrada = {
+                "numero_linha": numero_linha,
+                "ean": ean_extraido,
+                "descricao": descricao_extraida,
+                "conteudo": linha.strip(),
+                "motivo_erro": motivo_completo,
+                "idproduto": idproduto_extraido,
+            }
+            erros_entrada.append(erro_entrada)
+
 # Calcula a quantidade de produtos e de lotes necessários
 total_produtos = len(produtos)
 total_lotes = math.ceil(total_produtos / 300)
@@ -32,27 +138,27 @@ print(f"""Importando arquivo
 {total_produtos} produtos encontrados""")
 print("Iniciando processamento...")
 
-# Armazena separadamente as respostas bem-sucedidas e os lotes com erro
-lotes_certos = []
-lotes_errados = []
 # TESTE DE ERRO
-#lotes_errados.append({
-#    "numero_lote": 99,
-#    "produtos": produtos[:2],
-#    "motivo": "Erro de teste"
-#})
+# lotes_errados.append({
+#     "numero_lote": 99,
+#     "produtos": produtos[:2],
+#     "motivo": "Erro de teste"
+# })
 
 # Divide automaticamente os produtos em lotes de no máximo 300 itens
 for numero_lote, inicio in enumerate(range(0, total_produtos, 300), start= 1):
     lote = produtos[inicio : inicio + 300]    
     lote_api = []
     print(f"Processando lote {numero_lote}/{total_lotes} - {len(lote)} produtos")
+    
      # Converte os produtos do arquivo para o formato esperado pela API
     for produto in lote:
         tamanho_ean = len(produto["codEan"])
-        # A API aceita EAN com no máximo 14 caracteres.
-        # Quando ultrapassa esse limite, utiliza o código interno como EAN.
-        if tamanho_ean > 14:
+
+        # Valida o EAN antes do envio.
+        # Quando estiver vazio, não numérico ou possuir mais de 14 caracteres,
+        # utiliza o código interno do produto como EAN.
+        if (tamanho_ean > 14) or (produto["codEan"] == "") or not (produto["codEan"].isdigit()):
             produto["codEan"] = str(produto["idproduto"])
         produto_api = { "codinterno": str(produto["idproduto"]),
                     "ean": produto["codEan"], 
@@ -68,19 +174,25 @@ for numero_lote, inicio in enumerate(range(0, total_produtos, 300), start= 1):
                     "cst_cofins_saida": "00" }
         lote_api.append(produto_api)
     # Envia o lote para o endpoint de Revisão Fiscal
+    
     try:
             resposta = requests.post(url_revisao, json=lote_api)
             if (resposta.status_code == 200) or (resposta.status_code == 201):
                 print(f"Carregamento do lote {numero_lote} concluído - Status: {resposta.status_code}")
                 lotes_certos.append(resposta.json())
             else:
+                try:
+                    motivo_erro = json.dumps(resposta.json(), ensure_ascii=False)
+                except ValueError:
+                    motivo_erro = resposta.text
+
                 erro_lote = {
                         "numero_lote": numero_lote,
                         "produtos": lote,
-                        "motivo": resposta.json()}
+                        "motivo": motivo_erro}
                 print(f"Falha ao carregar lote {numero_lote} - Status: {resposta.status_code}")
                 lotes_errados.append(erro_lote)
-                print(resposta.json())
+                print(motivo_erro)
     except Exception as erro:
             erro_lote = {
                 "numero_lote": numero_lote,
@@ -89,17 +201,17 @@ for numero_lote, inicio in enumerate(range(0, total_produtos, 300), start= 1):
             }
             lotes_errados.append(erro_lote)
             print(f"Falha de conexão no lote {numero_lote}: {erro}")
+
 # Consolida os produtos retornados pelos lotes processados com sucesso
-itens = []
 for lote_certo in lotes_certos:
     itens.extend(lote_certo.get("itens", []))
+
 # Obtém os códigos internos dos produtos retornados pela API
-retornados = []
 for item in itens:
     retornados.append(int(item["produtos"]["produto_cliente"]["cod_interno_cliente"]))
 print(f"Total de itens retornados pela API: {len(retornados)}")
+
 # Identifica os produtos enviados que não foram retornados pela API
-nao_encontrados = []
 for produto in produtos:
     if produto["idproduto"] not in retornados:
         nao_encontrados.append(produto)
@@ -123,13 +235,10 @@ def achatar_json(dados, caminho = "", resultado = None):
     return resultado
 
 # Aplica o achatamento a todos os produtos retornados
-itens_achatados = []
 for item in itens:
     itens_achatados.append(achatar_json(item))
 
 # Monta dinamicamente as colunas a partir dos campos retornados pela API
-colunas = []
-
 for item in itens_achatados:
     for chave in item.keys():
         if chave not in colunas:
@@ -148,8 +257,6 @@ for item in itens_achatados:
 workbook.save("output/revisao_fiscal_v3.xlsx")
 
 # Transforma os lotes com erro em uma lista de produtos individuais
-produtos_com_erro = []
-
 for lote_com_erro in lotes_errados:
     for produto in lote_com_erro["produtos"]:
         produto_erro = {
@@ -160,15 +267,17 @@ for lote_com_erro in lotes_errados:
    "motivo_erro": lote_com_erro["motivo"]
    }
         produtos_com_erro.append(produto_erro)
-# Gera o Excel de erros somente quando houver produtos com falha
-if produtos_com_erro:
+
+# Consolida erros de entrada e de processamento da API em um único relatório
+relatorio_de_erros = produtos_com_erro + erros_entrada
+if relatorio_de_erros:
     workbook_erros = Workbook()
     planilha_erros = workbook_erros.active
 
-    colunas_com_erros = ["numero_lote", "idproduto", "ean", "descricao", "motivo_erro"]
+    colunas_com_erros = ["numero_linha","numero_lote", "idproduto", "ean", "descricao", "conteudo", "motivo_erro"]
     planilha_erros.append(colunas_com_erros)
 
-    for produto in produtos_com_erro:
+    for produto in relatorio_de_erros:
         linhas_com_erro = []
         for coluna in colunas_com_erros:
             linhas_com_erro.append(produto.get(coluna, ""))
